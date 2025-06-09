@@ -14,7 +14,7 @@
 ## 环境搭建
 
 * 在魔搭社区启动环境
-  ![Platform-Startup](.\Model-Deployment\Platform-Startup.png)
+  ![Platform-Startup](Model-Deployment\Platform-Startup.png)
 
 * 本次实验我选择直接在root下直接操作
 
