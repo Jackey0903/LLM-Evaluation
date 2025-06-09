@@ -1,0 +1,567 @@
+# llm_evaluation_project
+
+###                                                                                                                                                          作者：2351493 胡浩杰
+
+**项目公开可访问链接**：https://github.com/Jackey0903/LLM-Evaluation
+
+
+
+## 项目简介
+
+本项目是对 ChatGLM3-6B 和 Qwen-7B-Chat 两个大语言模型在 8 个测试问题上的表现对比分析，从**逻辑推理、数学能力、知识解释、创作风格**等核心维度展开，并结合具体场景给出适用建议
+
+
+## 环境搭建
+
+* 在魔搭社区启动环境
+  ![Platform-Startup](.\Model-Deployment\Platform-Startup.png)
+
+* 本次实验我选择直接在root下直接操作
+
+  
+
+* 在执行前加一条命令检查 pip 是否能正常联网
+
+  
+
+  ```
+  pip install -U pip setuptools wheel
+  ```
+
+  
+
+* 配置以下基础依赖
+
+```bash
+# 安装基础依赖（兼容 transformers 4.33.3 和 neuralchat）
+pip install \
+ "intel-extension-for-transformers==1.4.2" \
+ "neural-compressor==2.5" \
+ "transformers==4.33.3" \
+ "modelscope==1.9.5" \
+ "pydantic==1.10.13" \
+ "sentencepiece" \
+ "tiktoken" \
+ "einops" \
+ "transformers_stream_generator" \
+ "uvicorn" \
+ "fastapi" \
+ "yacs" \
+ "setuptools_scm"
+# 安装 fschat（需要启用 PEP517 构建）
+pip install fschat --use-pep517
+```
+
+依赖安装完成后：
+
+![依赖下载完成](.\模型部署\依赖下载完成.png)
+
+## 模型下载
+
+* 切换到工作目录，下载相对应的中文大模型至本地
+
+```bash
+cd /mnt/workspace
+git clone https://www.modelscope.cn/ZhipuAI/chatglm3-6b.git
+git clone https://www.modelscope.cn/qwen/Qwen-7B-Chat.git
+```
+
+![智谱git克隆](.\模型部署\智谱git克隆.png)
+
+![千问git克隆](.\模型部署\千问git克隆.png)
+
+下载完成：
+
+![下载完成](.\模型部署\下载完成.png)
+
+
+## 运行实例
+
+* 切换到工作目录，运行实例
+
+```bash
+cd /mnt/workspace
+python run_qwen_cpu.py
+python run_chatglm_cpu.py
+```
+
+
+
+ **run_qwen_cpu.py 代码**
+
+
+```python
+from transformers import TextStreamer, AutoTokenizer, AutoModelForCausalLM
+import torch
+import time
+
+# 检查IPEX是否可用
+try:
+    import intel_extension_for_pytorch as ipex
+    print(f"IPEX {ipex.__version__} 可用")
+    ipex_available = True
+except ImportError:
+    print("警告: IPEX不可用，将在标准CPU上运行")
+    ipex_available = False
+
+# 模型路径配置
+MODEL_PATH = "/mnt/data/Qwen-7B-Chat"
+
+# 测试问题集
+TEST_PROMPTS = {
+    "问题1 (冬天夏天)": "请说出以下两句话区别在哪里? 1、冬天:能穿多少穿多少 2、夏天:能穿多少穿多少",
+    "问题2 (单身狗)": "请说出以下两句话区别在哪里?单身狗产生的原因有两个，一是谁都看不上，二是谁都看不上",
+    "问题3 (谁不知道)": "他知道我知道你知道他不知道吗? 这句话里,到底谁不知道",
+    "问题4 (明明白白)": "明明明明明白白白喜欢他,可她就是不说。 这句话里,明明和白白谁喜欢谁?",
+    "问题5 (意思)": "领导:你这是什么意思? 小明:没什么意思。意思意思。 领导:你这就不够意思了。 小明:小意思,小意思。领导:你这人真有意思。 小明:其实也没有别的意思。 领导:那我就不好意思了。 小明:是我不好意思。请问:以上\"意思\"分别是什么意思。",
+    "问题6 (数学逻辑)": "一个水池有两个进水口A和B。A单独注满水池需要6小时，B单独注满需要4小时。水池底部有一个排水口C，单独排空满池水需要3小时。如果同时打开A、B、C三个口，需要多少小时才能注满水池？请分步骤解释计算过程。",
+    "问题7 (科技伦理)": "近年来人工智能发展迅速，有人认为AI最终会超越人类智能并威胁人类生存。你如何看待这种观点？请从技术发展现状、理论可能性和伦理规范三个角度分析。",
+    "问题8 (创作能力)": "请创作一首李白风格的古诗。"
+}
+
+# 打印环境信息
+print(f"PyTorch版本: {torch.__version__}, CUDA可用: {torch.cuda.is_available()}")
+
+# 加载模型
+print(f"加载模型: {MODEL_PATH}")
+start_time = time.time()
+
+try:
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_PATH, 
+        trust_remote_code=True,
+        torch_dtype="auto",
+        device_map="cpu"
+    ).eval()
+    print(f"模型加载成功，耗时: {time.time()-start_time:.2f}秒")
+except Exception as e:
+    print(f"加载失败: {e}")
+    exit()
+
+# 应用IPEX优化
+if ipex_available:
+    try:
+        print("应用IPEX优化...")
+        model = ipex.optimize(model, dtype=torch.bfloat16)
+    except Exception as e:
+        print(f"IPEX优化失败: {e}")
+
+# 设置流式输出
+streamer = TextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+if tokenizer.pad_token_id is None:
+    tokenizer.pad_token_id = tokenizer.eos_token_id
+
+# 测试模型
+print(f"\n开始测试{len(TEST_PROMPTS)}个问题...")
+total_start = time.time()
+
+for name, prompt in TEST_PROMPTS.items():
+    print(f"\n【{name}】{prompt}")
+    print("模型回答:")
+    
+    start_time = time.time()
+    inputs = tokenizer(prompt, return_tensors="pt").input_ids.to("cpu")
+    
+    try:
+        with torch.no_grad():
+            model.generate(
+                input_ids=inputs,
+                streamer=streamer,
+                max_new_tokens=768,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.8,
+                pad_token_id=tokenizer.pad_token_id
+            )
+        print(f"\n回答耗时: {time.time()-start_time:.2f}秒")
+    except Exception as e:
+        print(f"生成错误: {e}")
+
+print(f"\n所有问题测试完成，总耗时: {(time.time()-total_start)/60:.2f}分钟")
+```
+
+
+
+ **run_chatglm_cpu.py 代码**
+
+
+```python
+from transformers import AutoTokenizer, AutoModel
+import torch
+import time
+
+# 模型路径配置
+MODEL_PATH = "/mnt/data/chatglm3-6b"
+
+# 测试问题集
+TEST_PROMPTS = {
+    "问题1 (冬天夏天)": "请说出以下两句话区别在哪里? 1、冬天:能穿多少穿多少 2、夏天:能穿多少穿多少",
+    "问题2 (单身狗)": "请说出以下两句话区别在哪里?单身狗产生的原因有两个，一是谁都看不上，二是谁都看不上",
+    "问题3 (谁不知道)": "他知道我知道你知道他不知道吗? 这句话里,到底谁不知道",
+    "问题4 (明明白白)": "明明明明明白白白喜欢他,可她就是不说。 这句话里,明明和白白谁喜欢谁?",
+    "问题5 (意思)": "领导:你这是什么意思? 小明:没什么意思。意思意思。 领导:你这就不够意思了。 小明:小意思,小意思。领导:你这人真有意思。 小明:其实也没有别的意思。 领导:那我就不好意思了。 小明:是我不好意思。请问:以上\"意思\"分别是什么意思。",
+    "问题6 (数学逻辑)": "一个水池有两个进水口A和B。A单独注满水池需要6小时，B单独注满需要4小时。水池底部有一个排水口C，单独排空满池水需要3小时。如果同时打开A、B、C三个口，需要多少小时才能注满水池？请分步骤解释计算过程。",
+    "问题7 (科技伦理)": "近年来人工智能发展迅速，有人认为AI最终会超越人类智能并威胁人类生存。你如何看待这种观点？请从技术发展现状、理论可能性和伦理规范三个角度分析。",
+    "问题8 (创作能力)": "请创作一首李白风格的古诗。"
+}
+
+# 打印环境信息
+print(f"PyTorch版本: {torch.__version__}, CUDA可用: {torch.cuda.is_available()}")
+
+# 检查IPEX是否可用
+try:
+    import intel_extension_for_pytorch as ipex
+    print(f"IPEX {ipex.__version__} 可用")
+    IPEX_AVAILABLE = True
+except ImportError:
+    print("警告: IPEX不可用，将在标准CPU上运行")
+    IPEX_AVAILABLE = False
+
+# 加载模型
+print(f"加载模型: {MODEL_PATH}")
+start_time = time.time()
+
+try:
+    # 尝试以bfloat16加载模型
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
+    model = AutoModel.from_pretrained(
+        MODEL_PATH,
+        trust_remote_code=True,
+        torch_dtype=torch.bfloat16,
+        device_map="cpu"
+    ).eval()
+    print(f"模型加载成功(bfloat16)，耗时: {time.time()-start_time:.2f}秒")
+except Exception as e:
+    print(f"bfloat16加载失败: {e}")
+    print("尝试float32加载...")
+    try:
+        model = AutoModel.from_pretrained(
+            MODEL_PATH,
+            trust_remote_code=True,
+            torch_dtype=torch.float32,
+            device_map="cpu"
+        ).eval()
+        print(f"模型加载成功(float32)，耗时: {time.time()-start_time:.2f}秒")
+    except Exception as e:
+        print(f"模型加载失败: {e}")
+        exit()
+
+# 应用IPEX优化
+if IPEX_AVAILABLE:
+    try:
+        print("应用IPEX优化...")
+        model = ipex.optimize(model, dtype=model.config.torch_dtype)
+        print("IPEX优化成功")
+    except Exception as e:
+        print(f"IPEX优化失败: {e}")
+
+# 测试模型
+print(f"\n开始测试{len(TEST_PROMPTS)}个问题...")
+total_start = time.time()
+
+for name, prompt in TEST_PROMPTS.items():
+    print(f"\n【{name}】{prompt}")
+    print("模型回答:")
+    
+    start_time = time.time()
+    history = []
+    try:
+        # 使用stream_chat进行流式对话
+        response = ""
+        for chunk, history in model.stream_chat(
+            tokenizer, 
+            prompt, 
+            history=history,
+            max_length=2048,
+            do_sample=True,
+            temperature=0.7,
+            top_p=0.8
+        ):
+            print(chunk.replace(response, ""), end="", flush=True)
+            response = chunk
+        
+        print(f"\n回答耗时: {time.time()-start_time:.2f}秒")
+    except Exception as e:
+        print(f"\n生成错误: {e}")
+
+print(f"\n所有问题测试完成，总耗时: {(time.time()-total_start)/60:.2f}分钟")
+
+```
+
+
+
+## 问答测试
+
+为了对比不同大语言模型在理解和生成能力上的特点，我们在配置好的 Python 环境中向每个已部署的模型（ Qwen-7B-Chat, ChatGLM3-6B ）提出以下8个具有代表性的问题。
+
+以下是统一使用的测试问题列表：
+
+1. **问题1 (冬天夏天)**:
+
+   > 请说出以下两句话区别在哪里?
+   > 1、冬天:能穿多少穿多少
+   > 2、夏天:能穿多少穿多少
+
+2. **问题2 (单身狗)**:
+
+   > 请说出以下两句话区别在哪里?
+   > 单身狗产生的原因有两个,一是谁都看不上,二是谁都看不上
+
+3. **问题3 (谁不知道)**:
+
+   > 他知道我知道你知道他不知道吗? 这句话里,到底谁不知道
+
+4. **问题4 (明明白白)**:
+
+   > 明明明明明白白喜欢他,可她就是不说。 这句话里,明明和白白谁喜欢谁?
+
+5. **问题5 (意思)**:
+
+   > 领导:你这是什么意思?
+   > 小明:没什么意思。意思意思。
+   > 领导:你这就不够意思了。
+   > 小明:小意思,小意思。
+   > 领导:你这人真有意思。
+   > 小明:其实也没有别的意思。
+   > 领导:那我就不好意思了。
+   > 小明:是我不好意思。
+   > 请问:以上"意思"分别是什么意思。
+
+6. **问题6 (数学逻辑)**:
+
+   > 一个水池有两个进水口A和B。A单独注满水池需要6小时，B单独注满需要4小时。水池底部有一个排水口C，单独排空满池水需要3小时。如果同时打开A、B、C三个口，需要多少小时才能注满水池？请分步骤解释计算过程。
+
+7. **问题7 (科技伦理)**:
+
+   > 近年来人工智能发展迅速，有人认为AI最终会超越人类智能并威胁人类生存。你如何看待这种观点？请从技术发展现状、理论可能性和伦理规范三个角度分析。
+
+8. **问题8 (创作能力)**:
+
+   > 请创作一首李白风格的古诗。
+
+
+---
+
+#### ChatGLM3-6B 回答截图
+
+**问题一 (冬天夏天):**
+
+请说出以下两句话区别在哪里?
+1、冬天:能穿多少穿多少
+2、夏天:能穿多少穿多少
+
+ChatGLM3-6B
+
+![image-20250609091344240](智谱回答\问题一.png)
+
+Qwen-7B-Chat
+
+![问题一](qwen回答\问题一.png)
+
+---
+
+
+
+**问题二 (单身狗):**
+
+请说出以下两句话区别在哪里?
+单身狗产生的原因有两个,一是谁都看不上,二是谁都看不上
+
+ChatGLM3-6B
+
+![image-20250609091359963](智谱回答\问题二.png)
+
+Qwen-7B-Chat
+
+![问题二](qwen回答\问题二.png)
+
+---
+
+**问题三 (谁不知道):**
+
+他知道我知道你知道他不知道吗? 这句话里,到底谁不知道
+
+ChatGLM3-6B
+
+![image-20250609091412284](智谱回答\问题三.png)
+
+Qwen-7B-Chat
+
+![问题三](qwen回答\问题三.png)
+
+---
+
+**问题四 (明明白白):**
+
+明明明明明白白喜欢他,可她就是不说。 这句话里,明明和白白谁喜欢谁?
+
+ChatGLM3-6B
+
+![image-20250609091441559](智谱回答\问题四.png)
+
+Qwen-7B-Chat
+
+![问题四](qwen回答\问题四.png)
+
+---
+
+**问题五 (意思):**
+
+领导:你这是什么意思?
+小明:没什么意思。意思意思。
+领导:你这就不够意思了。
+小明:小意思,小意思。
+领导:你这人真有意思。
+小明:其实也没有别的意思。
+领导:那我就不好意思了。
+小明:是我不好意思。
+请问:以上"意思"分别是什么意思。
+
+ChatGLM3-6B
+
+![image-20250609092148845](智谱回答\问题五.png)
+
+Qwen-7B-Chat
+
+![问题五](qwen回答\问题五.png)
+
+---
+
+**问题六 (数学逻辑):**
+
+一个水池有两个进水口A和B。A单独注满水池需要6小时，B单独注满需要4小时。水池底部有一个排水口C，单独排空满池水需要3小时。如果同时打开A、B、C三个口，需要多少小时才能注满水池？请分步骤解释计算过程。
+
+ChatGLM3-6B
+
+![image-20250609094019931](智谱回答\问题六.png)
+
+Qwen-7B-Chat
+
+![问题六](qwen回答\问题六.png)
+
+---
+
+**问题七 (科技伦理):**
+
+近年来人工智能发展迅速，有人认为AI最终会超越人类智能并威胁人类生存。你如何看待这种观点？请从技术发展现状、理论可能性和伦理规范三个角度分析。
+
+ChatGLM3-6B
+
+![image-20250609100925129](智谱回答\问题七.png)
+
+Qwen-7B-Chat
+
+![image-20250609090101286](qwen回答\问题七.png)
+
+---
+
+**问题八 (创作能力):**
+
+请创作一首李白风格的古诗。
+
+ChatGLM3-6B
+
+![image-20250609101736793](智谱回答\问题八.png)
+
+
+
+Qwen-7B-Chat
+
+![image-20250609090119079](qwen回答\问题八.png)
+
+---
+
+
+
+## 大语言模型横向比对分析
+
+以下是对 ChatGLM3-6B 和 Qwen-7B-Chat 两个大语言模型在 8 个测试问题上的表现对比分析，从**逻辑推理、数学能力、知识解释、创作风格**等核心维度展开，并结合具体场景给出适用建议：
+
+### **一、总体表现概述**
+
+#### **ChatGLM3-6B**
+
+- **优势**：在**语义模糊问题**（如多义词 “意思” 的解读）和**伦理分析**中表现出较强的语境理解能力，回答结构较为系统。
+- **不足**：数学逻辑推理存在明显错误，创意生成时依赖现有诗句引用，原创性不足；部分问题（如 “谁不知道”）的解析较为模糊。
+
+#### **Qwen-7B-Chat**
+
+- **优势**：在**逻辑歧义问题**（如 “单身狗原因”“明明白白喜欢”）中能精准区分语义层次，回答直接明确；创作能力展现出一定的灵活性，能原创古诗。
+- **不足**：数学问题未给出有效解答，科技伦理分析的结构性稍弱，部分表述存在断句不完整的情况。
+
+### **二、分类能力对比**
+
+#### **1. 逻辑推理与复杂语义理解（问题 1-5）**
+
+- **问题 1（冬夏穿衣）**
+  - **ChatGLM3-6B**：指出季节差异导致穿衣逻辑不同，但表述简略（如 “可能多穿”“适当减少”），未明确 “多穿 / 少穿” 的核心区别。
+  - **Qwen-7B-Chat**：详细区分冬季 “保暖需求” 与夏季 “散热需求”，逻辑清晰，细节完整。
+- **问题 2（单身狗原因）**
+  - **ChatGLM3-6B**：认为差异在于 “语言风格重复”，未触及语义本质（主动 “看不上别人” vs 被动 “不被别人看上”）。
+  - **Qwen-7B-Chat**：精准指出两句话的逻辑矛盾（前者原因是 “自身挑剔”，后者是 “他人不青睐”），语义解析更深入。
+- **问题 3（谁不知道）**
+  - **ChatGLM3-6B**：称 “需上下文判断”，未给出明确结论。
+  - **Qwen-7B-Chat**：直接定位 “他不知道”，逻辑链条清晰。
+- **问题 4（明明白白喜欢）**
+  - **ChatGLM3-6B**：认为 “无法确定”，回避语义解读。
+  - **Qwen-7B-Chat**：判定 “明明喜欢白白”，虽可能存在歧义，但给出明确推理结果。
+- **问题 5（多义 “意思”）**
+  - **ChatGLM3-6B**：逐句解释，但部分解读偏离语境（如将 “领导不好意思” 理解为 “误解”）。
+  - **Qwen-7B-Chat**：贴合中文社交语境（如 “小意思 = 小事”“不够意思 = 不礼貌”），更符合日常用法。
+
+#### **2. 数学逻辑与问题解决（问题 6）**
+
+- **ChatGLM3-6B**：计算过程出现根本性错误（将排水口效率误作注水效率，得出 “1 小时注满” 的错误结论）。
+- **Qwen-7B-Chat**：文档未显示有效回答，推测可能在数学建模能力上存在短板。
+
+#### **3. 知识解释与科技伦理（问题 7）**
+
+- ChatGLM3-6B
+
+  ：从**技术现状**（AI 依赖数据和算法，未突破人类智能）、**理论可能**（通用 AI 尚远，需突破自我意识）、**伦理规范**（透明性、人权保护）三方面系统分析，结构完整。
+
+- Qwen-7B-Chat
+
+  ：提到 “AI 缺乏自我驱动力”，但未分维度展开，表述零散（如 “这不人有自我练力” 存在语病），逻辑连贯性较弱。
+
+#### **4. 创意生成与角色扮演（问题 8）**
+
+- **ChatGLM3-6B**：直接引用李白《月下独酌》原诗，未体现原创能力。
+- **Qwen-7B-Chat**：原创诗句 “月光洒满山河，照见我心事重重”，虽意境不及李白，但展现了主题联想和韵律把控能力。
+
+### **三、回答风格与特性对比**
+
+| **维度**             | **ChatGLM3 - 6B**              | **Qwen - 7B - Chat**                     |
+| -------------------- | ------------------------------ | ---------------------------------------- |
+| **响应速度**         | 快，适合实时交互场景           | 较慢，需优化性能以适应高时效需求         |
+| **逻辑严谨性**       | 基础推理可靠，但复杂场景易模糊 | 深度解析能力更强，尤其在语义多义性问题上 |
+| **回答 granularity** | 简洁概括，适合快速获取结论     | 细节丰富，适合需要详细解释的场景         |
+| **创作能力**         | 偏向经典引用，创新性较弱       | 原创性更强，风格更灵活                   |
+| **数学能力**         | 存在逻辑疏漏，需强化计算准确性 | 未完整展示，但逻辑链完整性可能更优       |
+
+### **四、时间效率对比**
+
+- **ChatGLM3 - 6B**：总耗时约 49.54 分钟，单问题平均耗时约 6.19 分钟，思维速度较快。
+- **Qwen - 7B - Chat**：总耗时约 139.55 分钟，单问题平均耗时约 17.44 分钟，相对来说回答耗时较长。
+
+### **五、适用场景建议**
+
+#### **ChatGLM3-6B 更适合：**
+
+1. **企业级伦理合规分析**：如 AI 产品开发中的风险评估、政策解读，需系统性输出观点的场景。
+2. **多轮语义澄清对话**：对模糊问题（如合同条款歧义）能引导用户补充信息，避免武断结论。
+
+#### **Qwen-7B-Chat 更适合：**
+
+1. **日常智能助手**：处理生活常识问答（如 “冬夏穿衣建议”）、幽默段子解析等需要快速反应的场景。
+2. **创意内容生成**：如文案创作、故事接龙，可提供多样化思路（尽管需进一步优化质量）。
+
+### **六、综合评价**
+
+- **ChatGLM3-6B** 体现了大模型在**专业领域分析**中的潜力，尤其在伦理、政策等需要严谨逻辑的场景中表现稳定，但需加强数学推理和创意生成能力。
+- **Qwen-7B-Chat** 在**日常交互和逻辑解析**中更具亲和力，适合轻量化应用，但需提升复杂问题的准确性和知识深度。
+- 两者差异反映了模型设计侧重点的不同 ——ChatGLM3 侧重工程化落地的效率，Qwen 侧重认知能力的深度拓展，实际应用中可根据具体需求灵活选择。
+
+
+
